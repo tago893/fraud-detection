@@ -1,9 +1,10 @@
-"""SQLite storage for scored transactions. WAL mode, one short-lived connection per call."""
+"""SQLite storage for scored transactions. WAL mode; the API shares one persistent connection."""
 
 from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,13 +39,43 @@ class TransactionRecord:
     true_label: int | None
 
 
+# Persistent connections for a running API, keyed by database path. A fresh connection per call
+# is cheap on a local disk but costly on a Docker bind mount (about 35 ms per insert there):
+# in WAL mode every open/close creates and removes the -wal/-shm files. One shared connection,
+# serialized by a lock, removes that churn.
+_shared: dict[Path, tuple[sqlite3.Connection, threading.RLock]] = {}
+
+
+def _open(path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection:
+    conn = sqlite3.connect(path, timeout=5.0, check_same_thread=check_same_thread)
+    conn.execute("PRAGMA synchronous=NORMAL")  # per connection, unlike journal_mode
+    return conn
+
+
+def open_shared(path: Path) -> None:
+    """Keep one connection open for `path` (idempotent). Call close_shared on shutdown."""
+    if path not in _shared:
+        _shared[path] = (_open(path, check_same_thread=False), threading.RLock())
+
+
+def close_shared(path: Path) -> None:
+    shared = _shared.pop(path, None)
+    if shared is not None:
+        shared[0].close()
+
+
 @contextmanager
 def connect(path: Path) -> Iterator[sqlite3.Connection]:
-    """Open a connection, commit on success, always close. synchronous is per connection."""
-    with closing(sqlite3.connect(path, timeout=5.0)) as conn:
-        conn.execute("PRAGMA synchronous=NORMAL")
-        with conn:
+    """Commit on success, roll back on error. Uses the shared connection if one is open for
+    `path` (held under its lock for the whole block); otherwise opens and closes its own."""
+    shared = _shared.get(path)
+    if shared is not None:
+        conn, lock = shared
+        with lock, conn:
             yield conn
+        return
+    with closing(_open(path)) as conn, conn:
+        yield conn
 
 
 def init_db(path: Path) -> None:

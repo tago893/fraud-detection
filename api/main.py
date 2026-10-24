@@ -114,9 +114,13 @@ def create_app(artifacts_dir: Path = ARTIFACTS, db_path: Path = DB_PATH) -> Fast
         for key, value in load_state(artifacts_dir).items():
             setattr(app.state, key, value)
         db.init_db(db_path)
+        db.open_shared(db_path)
         app.state.db_path = db_path
         app.state.threshold_lock = threading.Lock()
-        yield
+        try:
+            yield
+        finally:
+            db.close_shared(db_path)
 
     app = FastAPI(title="Fraud Detection API", lifespan=lifespan)
 

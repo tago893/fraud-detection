@@ -404,3 +404,77 @@ def test_window_summary_nearest_rank_p95(tmp_path):
         )
     assert db.window_summary(path, "2026-01-01T00:00:00.000+00:00") == (20, 5, 19.0)
     assert db.window_summary(path, "2027-01-01T00:00:00.000+00:00") == (0, 0, None)
+
+
+# ---- persistent shared connection ---------------------------------------------------------
+
+
+def test_running_app_uses_one_shared_connection_and_closes_it_on_shutdown(
+    tmp_path, test_rows
+):
+    path = tmp_path / "tx.db"
+    with TestClient(create_app(db_path=path)) as c:
+        assert path in db._shared
+        conn = db._shared[path][0]
+        for _, row in test_rows.head(10).iterrows():
+            c.post("/score", json=row_payload(row))
+        assert db._shared[path][0] is conn  # reused, not reopened per call
+        assert db.count_transactions(path) == 10
+    assert path not in db._shared  # closed with the app
+    assert (
+        db.count_transactions(path) == 10
+    )  # data persisted; plain per-call access works again
+
+
+def test_shared_connection_survives_concurrent_writers(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    path = tmp_path / "tx.db"
+    db.init_db(path)
+    db.open_shared(path)
+    try:
+
+        def write(i):
+            db.insert_transaction(
+                path,
+                db.TransactionRecord(
+                    f"c{i}",
+                    "2026-01-01T00:00:00.000+00:00",
+                    1.0,
+                    0.1,
+                    False,
+                    0.5,
+                    1.0,
+                    None,
+                ),
+            )
+
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            list(pool.map(write, range(300)))
+        assert db.count_transactions(path) == 300
+    finally:
+        db.close_shared(path)
+
+
+def test_failed_statement_rolls_back_on_the_shared_connection(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "tx.db"
+    db.init_db(path)
+    db.open_shared(path)
+    try:
+        rec = db.TransactionRecord(
+            "dup", "2026-01-01T00:00:00.000+00:00", 1.0, 0.1, False, 0.5, 1.0, None
+        )
+        db.insert_transaction(path, rec)
+        with pytest.raises(sqlite3.IntegrityError):
+            db.insert_transaction(path, rec)
+        db.insert_transaction(
+            path,
+            db.TransactionRecord("ok", rec.scored_at, 1.0, 0.1, False, 0.5, 1.0, None),
+        )
+        assert (
+            db.count_transactions(path) == 2
+        )  # the connection is still usable after the error
+    finally:
+        db.close_shared(path)
