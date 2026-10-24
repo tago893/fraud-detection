@@ -7,6 +7,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.preprocessing import RobustScaler
+from xgboost import XGBClassifier
 
 from pipeline.config import FEATURE_ORDER, SCALED_COLUMNS, SEED, TARGET
 
@@ -39,3 +40,24 @@ def val_scores(model, x_val: np.ndarray, y_val: np.ndarray) -> dict[str, float]:
 def train_logreg(x_train: np.ndarray, y_train: np.ndarray) -> LogisticRegression:
     model = LogisticRegression(class_weight="balanced", max_iter=1000, random_state=SEED)
     return model.fit(x_train, y_train)
+
+
+def train_xgboost(
+    x_train: np.ndarray, y_train: np.ndarray, x_val: np.ndarray, y_val: np.ndarray
+) -> XGBClassifier:
+    """Class-weighted XGBoost; early stopping on the val slice (val is never trained on)."""
+    pos = int(y_train.sum())
+    model = XGBClassifier(
+        n_estimators=1000,
+        learning_rate=0.05,
+        max_depth=4,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        scale_pos_weight=(len(y_train) - pos) / pos,
+        eval_metric="aucpr",
+        tree_method="hist",
+        early_stopping_rounds=50,
+        random_state=SEED,
+        n_jobs=-1,
+    )
+    return model.fit(x_train, y_train, eval_set=[(x_val, y_val)], verbose=False)

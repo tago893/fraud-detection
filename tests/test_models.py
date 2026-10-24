@@ -16,3 +16,14 @@ def test_logreg_val_pr_auc_above_half(logreg, xy):
     scores = val_scores(logreg, *xy["val"])
     print(f"LR val PR-AUC={scores['val_pr_auc']:.4f} ROC-AUC={scores['val_roc_auc']:.4f}")
     assert scores["val_pr_auc"] > 0.5
+
+
+def test_xgboost_matches_or_beats_logreg(logreg, xy):
+    from pipeline.train import train_xgboost
+
+    model = train_xgboost(*xy["train"], *xy["val"])
+    xgb = val_scores(model, *xy["val"])
+    lr = val_scores(logreg, *xy["val"])
+    print(f"XGB val PR-AUC={xgb['val_pr_auc']:.4f} ROC-AUC={xgb['val_roc_auc']:.4f} "
+          f"best_iter={model.best_iteration} | LR PR-AUC={lr['val_pr_auc']:.4f}")
+    assert xgb["val_pr_auc"] >= lr["val_pr_auc"]
