@@ -1,4 +1,5 @@
 """Single source of truth for paths, seeds, costs, and feature order."""
+
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent

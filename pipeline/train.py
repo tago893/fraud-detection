@@ -1,4 +1,5 @@
 """Fit the scaler and train candidate models. Fit on train only; val is for selection."""
+
 from __future__ import annotations
 
 import json
@@ -39,12 +40,16 @@ def fit_scaler(train: pd.DataFrame) -> ColumnTransformer:
     Output column order equals FEATURE_ORDER because Time and Amount lead it.
     """
     scaler = ColumnTransformer(
-        [("robust", RobustScaler(), SCALED_COLUMNS)], remainder="passthrough", verbose_feature_names_out=False
+        [("robust", RobustScaler(), SCALED_COLUMNS)],
+        remainder="passthrough",
+        verbose_feature_names_out=False,
     )
     return scaler.fit(train[FEATURE_ORDER])
 
 
-def to_xy(scaler: ColumnTransformer, part: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+def to_xy(
+    scaler: ColumnTransformer, part: pd.DataFrame
+) -> tuple[np.ndarray, np.ndarray]:
     """Scale a split with the already-fitted scaler (never refit)."""
     return scaler.transform(part[FEATURE_ORDER]), part[TARGET].to_numpy()
 
@@ -59,7 +64,9 @@ def val_scores(model, x_val: np.ndarray, y_val: np.ndarray) -> dict[str, float]:
 
 
 def train_logreg(x_train: np.ndarray, y_train: np.ndarray) -> LogisticRegression:
-    model = LogisticRegression(class_weight="balanced", max_iter=1000, random_state=SEED)
+    model = LogisticRegression(
+        class_weight="balanced", max_iter=1000, random_state=SEED
+    )
     return model.fit(x_train, y_train)
 
 
@@ -112,7 +119,11 @@ def train_smote_xgboost(
         ]
     )
     cv_scores = cross_val_score(
-        pipe, x_train, y_train, cv=TimeSeriesSplit(n_splits=n_splits), scoring="average_precision"
+        pipe,
+        x_train,
+        y_train,
+        cv=TimeSeriesSplit(n_splits=n_splits),
+        scoring="average_precision",
     )
     return pipe.fit(x_train, y_train), [float(v) for v in cv_scores]
 
@@ -136,10 +147,17 @@ def run_training(splits: dict[str, pd.DataFrame], out_dir: Path = ARTIFACTS) -> 
         "xgboost": train_xgboost(x_train, y_train, x_val, y_val),
         "smote_xgboost": smote_model,
     }
-    candidates = {name: val_scores(model, x_val, y_val) for name, model in models.items()}
+    candidates = {
+        name: val_scores(model, x_val, y_val) for name, model in models.items()
+    }
     candidates["smote_xgboost"]["cv_pr_auc"] = cv_scores
     for name, sc in candidates.items():
-        log.info("%-14s val PR-AUC=%.4f ROC-AUC=%.4f", name, sc["val_pr_auc"], sc["val_roc_auc"])
+        log.info(
+            "%-14s val PR-AUC=%.4f ROC-AUC=%.4f",
+            name,
+            sc["val_pr_auc"],
+            sc["val_roc_auc"],
+        )
 
     winner = select_winner(candidates)
     joblib.dump(models[winner], out_dir / MODEL_PATH.name)

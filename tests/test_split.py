@@ -39,4 +39,7 @@ def test_parquet_roundtrip_keeps_raw_values(raw, splits, tmp_path):
     for name in SPLIT_ORDER:
         pd.testing.assert_frame_equal(loaded[name], splits[name])
     # raw Amount, not scaled
-    assert loaded["train"]["Amount"].max() == raw.loc[loaded["train"].index, "Amount"].max()
+    assert (
+        loaded["train"]["Amount"].max()
+        == raw.loc[loaded["train"].index, "Amount"].max()
+    )

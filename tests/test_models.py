@@ -14,7 +14,9 @@ def logreg(xy):
 
 def test_logreg_val_pr_auc_above_half(logreg, xy):
     scores = val_scores(logreg, *xy["val"])
-    print(f"LR val PR-AUC={scores['val_pr_auc']:.4f} ROC-AUC={scores['val_roc_auc']:.4f}")
+    print(
+        f"LR val PR-AUC={scores['val_pr_auc']:.4f} ROC-AUC={scores['val_roc_auc']:.4f}"
+    )
     assert scores["val_pr_auc"] > 0.5
 
 
@@ -24,8 +26,10 @@ def test_xgboost_matches_or_beats_logreg(logreg, xy):
     model = train_xgboost(*xy["train"], *xy["val"])
     xgb = val_scores(model, *xy["val"])
     lr = val_scores(logreg, *xy["val"])
-    print(f"XGB val PR-AUC={xgb['val_pr_auc']:.4f} ROC-AUC={xgb['val_roc_auc']:.4f} "
-          f"best_iter={model.best_iteration} | LR PR-AUC={lr['val_pr_auc']:.4f}")
+    print(
+        f"XGB val PR-AUC={xgb['val_pr_auc']:.4f} ROC-AUC={xgb['val_roc_auc']:.4f} "
+        f"best_iter={model.best_iteration} | LR PR-AUC={lr['val_pr_auc']:.4f}"
+    )
     assert xgb["val_pr_auc"] >= lr["val_pr_auc"]
 
 
@@ -45,7 +49,14 @@ def test_smote_branch_leaves_val_and_test_untouched(splits, xy):
     assert len(xy["train"][1]) == train_rows  # caller's train arrays are not resampled
     reloaded = load_splits()
     assert {n: len(reloaded[n]) for n in ("val", "test")} == sizes_before
-    assert xy["val"][0].shape[0] == sizes_before["val"] and xy["test"][0].shape[0] == sizes_before["test"]
-    assert (xy["val"][0] == x_val_before).all() and (xy["test"][0] == x_test_before).all()
+    assert (
+        xy["val"][0].shape[0] == sizes_before["val"]
+        and xy["test"][0].shape[0] == sizes_before["test"]
+    )
+    assert (xy["val"][0] == x_val_before).all() and (
+        xy["test"][0] == x_test_before
+    ).all()
     scores = val_scores(model, *xy["val"])
-    print(f"SMOTE+XGB cv_pr_auc={[round(v, 3) for v in cv]} val PR-AUC={scores['val_pr_auc']:.4f}")
+    print(
+        f"SMOTE+XGB cv_pr_auc={[round(v, 3) for v in cv]} val PR-AUC={scores['val_pr_auc']:.4f}"
+    )
