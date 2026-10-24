@@ -1,11 +1,14 @@
 """Fit the scaler and train candidate models. Fit on train only; val is for selection."""
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.preprocessing import RobustScaler
 
-from pipeline.config import FEATURE_ORDER, SCALED_COLUMNS
+from pipeline.config import FEATURE_ORDER, SCALED_COLUMNS, SEED, TARGET
 
 
 def fit_scaler(train: pd.DataFrame) -> ColumnTransformer:
@@ -17,3 +20,22 @@ def fit_scaler(train: pd.DataFrame) -> ColumnTransformer:
         [("robust", RobustScaler(), SCALED_COLUMNS)], remainder="passthrough", verbose_feature_names_out=False
     )
     return scaler.fit(train[FEATURE_ORDER])
+
+
+def to_xy(scaler: ColumnTransformer, part: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """Scale a split with the already-fitted scaler (never refit)."""
+    return scaler.transform(part[FEATURE_ORDER]), part[TARGET].to_numpy()
+
+
+def val_scores(model, x_val: np.ndarray, y_val: np.ndarray) -> dict[str, float]:
+    """PR-AUC and ROC-AUC. Accuracy is meaningless at 0.17% fraud."""
+    proba = model.predict_proba(x_val)[:, 1]
+    return {
+        "val_pr_auc": float(average_precision_score(y_val, proba)),
+        "val_roc_auc": float(roc_auc_score(y_val, proba)),
+    }
+
+
+def train_logreg(x_train: np.ndarray, y_train: np.ndarray) -> LogisticRegression:
+    model = LogisticRegression(class_weight="balanced", max_iter=1000, random_state=SEED)
+    return model.fit(x_train, y_train)
