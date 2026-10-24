@@ -1,6 +1,12 @@
 """Fit the scaler and train candidate models. Fit on train only; val is for selection."""
 from __future__ import annotations
 
+import json
+import logging
+from datetime import datetime, timezone
+from pathlib import Path
+
+import joblib
 import numpy as np
 import pandas as pd
 from imblearn.over_sampling import SMOTE
@@ -12,7 +18,19 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.preprocessing import RobustScaler
 from xgboost import XGBClassifier
 
-from pipeline.config import FEATURE_ORDER, SCALED_COLUMNS, SEED, TARGET
+from pipeline.config import (
+    ARTIFACTS,
+    FEATURE_ORDER,
+    METRICS_PATH,
+    MODEL_PATH,
+    SCALED_COLUMNS,
+    SCALER_PATH,
+    SEED,
+    TARGET,
+)
+from pipeline.split import load_splits
+
+log = logging.getLogger(__name__)
 
 
 def fit_scaler(train: pd.DataFrame) -> ColumnTransformer:
@@ -97,3 +115,48 @@ def train_smote_xgboost(
         pipe, x_train, y_train, cv=TimeSeriesSplit(n_splits=n_splits), scoring="average_precision"
     )
     return pipe.fit(x_train, y_train), [float(v) for v in cv_scores]
+
+
+def select_winner(candidates: dict[str, dict[str, float]]) -> str:
+    """Winner is the candidate with the highest val PR-AUC."""
+    return max(candidates, key=lambda name: candidates[name]["val_pr_auc"])
+
+
+def run_training(splits: dict[str, pd.DataFrame], out_dir: Path = ARTIFACTS) -> dict:
+    """Fit scaler on train, train all candidates, save scaler, winner, and metrics.json."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    scaler = fit_scaler(splits["train"])
+    joblib.dump(scaler, out_dir / SCALER_PATH.name)
+    x_train, y_train = to_xy(scaler, splits["train"])
+    x_val, y_val = to_xy(scaler, splits["val"])
+
+    smote_model, cv_scores = train_smote_xgboost(x_train, y_train)
+    models = {
+        "logreg": train_logreg(x_train, y_train),
+        "xgboost": train_xgboost(x_train, y_train, x_val, y_val),
+        "smote_xgboost": smote_model,
+    }
+    candidates = {name: val_scores(model, x_val, y_val) for name, model in models.items()}
+    candidates["smote_xgboost"]["cv_pr_auc"] = cv_scores
+    for name, sc in candidates.items():
+        log.info("%-14s val PR-AUC=%.4f ROC-AUC=%.4f", name, sc["val_pr_auc"], sc["val_roc_auc"])
+
+    winner = select_winner(candidates)
+    joblib.dump(models[winner], out_dir / MODEL_PATH.name)
+    metrics = {
+        "candidates": candidates,
+        "selected": winner,
+        "model_version": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    (out_dir / METRICS_PATH.name).write_text(json.dumps(metrics, indent=2))
+    log.info("selected %s -> %s", winner, out_dir / MODEL_PATH.name)
+    return metrics
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    run_training(load_splits())
+
+
+if __name__ == "__main__":
+    main()
