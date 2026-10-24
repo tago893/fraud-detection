@@ -11,7 +11,6 @@ from sklearn.metrics import (
     average_precision_score,
     confusion_matrix,
     f1_score,
-    precision_recall_curve,
     precision_score,
     recall_score,
     roc_auc_score,
@@ -87,23 +86,32 @@ def split_report(
     }
 
 
-def downsample_pr_curve(
-    y: np.ndarray, proba: np.ndarray, max_points: int = 200
-) -> list[dict]:
-    precision, recall, thresholds = precision_recall_curve(y, proba)
-    idx = np.unique(
-        np.linspace(0, len(thresholds) - 1, min(max_points, len(thresholds))).astype(
-            int
+PR_CURVE_GRID = np.round(np.arange(5, 1000, 5) / 1000, 3)  # 0.005 .. 0.995, 199 points
+
+
+def pr_curve_points(y: np.ndarray, proba: np.ndarray) -> list[dict]:
+    """Precision/recall at evenly spaced thresholds (about 200 points) for the dashboard.
+
+    Spacing by threshold, not by score rank: almost every score sits near 0, so sampling by
+    rank would put nearly all points below 0.01 and leave the useful region almost empty.
+    Thresholds where nothing is flagged (precision undefined) are skipped.
+    """
+    positives = int((y == 1).sum())
+    points = []
+    for t in PR_CURVE_GRID:
+        flagged = proba >= t
+        n_flagged = int(flagged.sum())
+        if n_flagged == 0:
+            continue
+        tp = int((flagged & (y == 1)).sum())
+        points.append(
+            {
+                "threshold": float(t),
+                "precision": tp / n_flagged,
+                "recall": tp / positives if positives else 0.0,
+            }
         )
-    )
-    return [
-        {
-            "threshold": float(thresholds[i]),
-            "precision": float(precision[i]),
-            "recall": float(recall[i]),
-        }
-        for i in idx
-    ]
+    return points
 
 
 def format_table(val: dict, test: dict) -> str:
@@ -139,7 +147,7 @@ def write_test_report(threshold: float, art_dir=ARTIFACTS) -> str:
     path = art_dir / METRICS_PATH.name
     metrics = json.loads(path.read_text())
     metrics.update(
-        {"test": test, "val": val, "pr_curve": downsample_pr_curve(y_val, p_val)}
+        {"test": test, "val": val, "pr_curve": pr_curve_points(y_val, p_val)}
     )
     path.write_text(json.dumps(metrics, indent=2))
     return format_table(val, test)

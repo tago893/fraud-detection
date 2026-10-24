@@ -161,13 +161,15 @@ def render_what_if(labeled, slider_value: float, current: float | None) -> None:
 
 def render_threshold_panel(settings: Settings, conn, current: float | None) -> None:
     st.subheader("Threshold")
-    if SLIDER_KEY not in st.session_state:
-        st.session_state[SLIDER_KEY] = min(
-            max(round(current if current is not None else 0.5, 2), 0.01), 0.99
-        )
+    # Start at the live threshold. Passing it as the widget default (rather than presetting
+    # session_state) is what a real browser session honours; the slider resets only when the
+    # live threshold itself changes, e.g. right after Apply.
+    default = min(max(round(current if current is not None else 0.5, 2), 0.01), 0.99)
     left, right = st.columns(2)
     with left:
-        value = st.slider("What-if threshold", 0.01, 0.99, step=0.01, key=SLIDER_KEY)
+        value = st.slider(
+            "What-if threshold", 0.01, 0.99, value=default, step=0.01, key=SLIDER_KEY
+        )
         render_what_if(data.load_labeled_scores(conn), value, current)
         st.button(
             "Apply threshold",

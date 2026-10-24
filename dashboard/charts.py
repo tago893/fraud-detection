@@ -80,7 +80,11 @@ def score_histogram_figure(
     fig.update_yaxes(type="log", title_text="Transactions (log scale)")
     fig.update_xaxes(range=[0, 1], title_text="Fraud probability")
     fig.update_layout(bargap=0.15)
-    return _base_layout(fig)
+    _base_layout(fig)
+    fig.update_layout(
+        margin=dict(l=8, r=8, t=32, b=8)
+    )  # room for the threshold label above the plot
+    return fig
 
 
 def nearest_point(curve: list[dict], threshold: float) -> dict:

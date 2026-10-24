@@ -378,3 +378,14 @@ def test_pr_curve_figure_markers_sit_on_the_curve():
         0.9,
         0.95,
     )  # nearest point to 0.12 is 0.1
+
+
+def test_slider_default_is_passed_to_the_widget_not_preset_in_session_state():
+    # Presetting st.session_state[key] showed 0.85 in AppTest but 0.01 in a real browser session.
+    source = (Path(APP).parent / "app.py").read_text()
+    assert "st.session_state[SLIDER_KEY] =" not in source
+    assert "value=default" in source
+
+
+def test_histogram_leaves_room_for_the_threshold_label():
+    assert charts.score_histogram_figure(pd.Series([0.1]), 0.85).layout.margin.t >= 28
