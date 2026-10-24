@@ -22,3 +22,4 @@ SCALED_COLUMNS = ["Time", "Amount"]
 TARGET = "Class"
 
 DB_PATH = ROOT / "data" / "transactions.db"
+REPLAY_PATH = SPLITS_DIR / "replay.parquet"
