@@ -1,0 +1,58 @@
+# docker compose up --build                          -> api (:8000) + dashboard (:8501)
+# docker compose --profile sim up simulator          -> stream the replay slice at the api
+#
+# Needs artifacts/ from the pipeline first (see README, "Train the model").
+x-app: &app
+  build: .
+  image: fraud-detection:latest
+  volumes:
+    - ./artifacts:/app/artifacts:ro   # model, scaler, threshold, metrics, splits (read only)
+    - ./data:/app/data                # transactions.db lives here
+
+services:
+  api:
+    <<: *app
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+
+  dashboard:
+    <<: *app
+    command: >
+      streamlit run dashboard/app.py
+      --server.address 0.0.0.0 --server.port 8501
+      --server.headless true --browser.gatherUsageStats false
+    environment:
+      API_URL: http://api:8000
+      DASHBOARD_DB_PATH: /app/data/transactions.db
+      DASHBOARD_ARTIFACTS_DIR: /app/artifacts
+    ports:
+      - "8501:8501"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # One-off: builds artifacts/ from data/creditcard.csv inside Docker (no local Python needed).
+  #   docker compose --profile train run --rm pipeline
+  pipeline:
+    build: .
+    image: fraud-detection:latest
+    profiles: ["train"]
+    command: sh -c "python -m pipeline.split && python -m pipeline.train && python -m pipeline.evaluate"
+    volumes:
+      - ./artifacts:/app/artifacts      # read-write: this service writes the outputs
+      - ./data:/app/data:ro             # data/creditcard.csv
+
+  simulator:
+    <<: *app
+    profiles: ["sim"]
+    command: python -m simulator.stream_txns --url http://api:8000 --rate 10
+    depends_on:
+      api:
+        condition: service_healthy
