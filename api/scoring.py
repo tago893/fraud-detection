@@ -1,4 +1,5 @@
 """Turn a validated request into a fraud probability. Only the 30 features reach the model."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -22,7 +23,9 @@ class Scorer:
     feature_order: tuple[str, ...]
 
     @classmethod
-    def from_artifacts(cls, model: Any, scaler: ColumnTransformer, feature_order: Sequence[str]) -> Scorer:
+    def from_artifacts(
+        cls, model: Any, scaler: ColumnTransformer, feature_order: Sequence[str]
+    ) -> Scorer:
         order = tuple(feature_order)
         center, scale = np.zeros(len(order)), np.ones(len(order))
         robust = scaler.named_transformers_["robust"]

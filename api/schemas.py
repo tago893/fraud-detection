@@ -1,4 +1,5 @@
 """Request and response models for the scoring API."""
+
 from __future__ import annotations
 
 from typing import Annotated, Literal
@@ -11,7 +12,8 @@ Feature = Annotated[float, Field(allow_inf_nan=False)]
 NonNegativeFeature = Annotated[float, Field(allow_inf_nan=False, ge=0)]
 
 _feature_fields = {
-    name: (NonNegativeFeature if name in SCALED_COLUMNS else Feature, ...) for name in FEATURE_ORDER
+    name: (NonNegativeFeature if name in SCALED_COLUMNS else Feature, ...)
+    for name in FEATURE_ORDER
 }
 
 # All 30 features are required floats; Time and Amount must be >= 0; unknown fields are rejected.

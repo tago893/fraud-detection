@@ -32,7 +32,12 @@ def test_valid_payload_accepted_with_optional_fields_absent():
 
 
 def test_valid_payload_with_id_and_label_accepted():
-    assert client.post("/echo", json=payload(transaction_id="abc", true_label=1)).status_code == 200
+    assert (
+        client.post(
+            "/echo", json=payload(transaction_id="abc", true_label=1)
+        ).status_code
+        == 200
+    )
 
 
 def test_missing_v7_is_422():

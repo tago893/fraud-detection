@@ -1,4 +1,5 @@
 """SHAP explanations for flagged transactions (tree models only)."""
+
 from __future__ import annotations
 
 from typing import Any, Sequence
@@ -18,7 +19,9 @@ def unwrap_estimator(model: Any) -> Any:
 def build_explainer(model: Any) -> shap.TreeExplainer | None:
     """A TreeExplainer if the model is tree based, else None (logistic regression has no SHAP here)."""
     estimator = unwrap_estimator(model)
-    return shap.TreeExplainer(estimator) if isinstance(estimator, XGBClassifier) else None
+    return (
+        shap.TreeExplainer(estimator) if isinstance(estimator, XGBClassifier) else None
+    )
 
 
 def top_contributions(
@@ -30,7 +33,9 @@ def top_contributions(
 ) -> list[dict]:
     """Top-k features by |SHAP value| for one row. SHAP is computed on what the model saw (scaled)."""
     values = np.asarray(explainer.shap_values(scaled_row.reshape(1, -1)))
-    values = values[-1] if values.ndim == 3 else values  # some versions return one array per class
+    values = (
+        values[-1] if values.ndim == 3 else values
+    )  # some versions return one array per class
     contributions = values.reshape(-1)
     order = np.argsort(-np.abs(contributions))[:k]
     return [

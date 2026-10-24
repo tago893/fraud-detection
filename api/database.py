@@ -1,4 +1,5 @@
 """SQLite storage for scored transactions. WAL mode, one short-lived connection per call."""
+
 from __future__ import annotations
 
 import json
@@ -81,14 +82,21 @@ def count_transactions(path: Path) -> int:
         return conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
 
 
-def insert_threshold_change(path: Path, changed_at: str, old: float, new: float) -> None:
+def insert_threshold_change(
+    path: Path, changed_at: str, old: float, new: float
+) -> None:
     with connect(path) as conn:
-        conn.execute("INSERT INTO threshold_history (changed_at, old, new) VALUES (?, ?, ?)", (changed_at, old, new))
+        conn.execute(
+            "INSERT INTO threshold_history (changed_at, old, new) VALUES (?, ?, ?)",
+            (changed_at, old, new),
+        )
 
 
 def threshold_history(path: Path) -> list[tuple[str, float, float]]:
     with connect(path) as conn:
-        return conn.execute("SELECT changed_at, old, new FROM threshold_history ORDER BY rowid").fetchall()
+        return conn.execute(
+            "SELECT changed_at, old, new FROM threshold_history ORDER BY rowid"
+        ).fetchall()
 
 
 def set_shap_top(path: Path, transaction_id: str, contributions: list[dict]) -> None:
@@ -102,7 +110,10 @@ def set_shap_top(path: Path, transaction_id: str, contributions: list[dict]) -> 
 def get_shap_top(path: Path, transaction_id: str) -> list[dict] | None:
     """Top SHAP contributions, or None if the transaction is unknown or has none stored."""
     with connect(path) as conn:
-        row = conn.execute("SELECT shap_top FROM transactions WHERE transaction_id = ?", (transaction_id,)).fetchone()
+        row = conn.execute(
+            "SELECT shap_top FROM transactions WHERE transaction_id = ?",
+            (transaction_id,),
+        ).fetchone()
     return json.loads(row[0]) if row and row[0] else None
 
 
@@ -110,6 +121,7 @@ def window_stats(path: Path, since_iso: str) -> tuple[int, int, list[float]]:
     """(count, flagged count, latencies) for transactions scored at or after since_iso."""
     with connect(path) as conn:
         rows = conn.execute(
-            "SELECT flagged, latency_ms FROM transactions WHERE scored_at >= ?", (since_iso,)
+            "SELECT flagged, latency_ms FROM transactions WHERE scored_at >= ?",
+            (since_iso,),
         ).fetchall()
     return len(rows), sum(r[0] for r in rows), [r[1] for r in rows]

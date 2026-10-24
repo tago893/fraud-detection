@@ -1,4 +1,5 @@
 """Fraud scoring API: load artifacts once at startup, score per request."""
+
 from __future__ import annotations
 
 import json
@@ -15,9 +16,22 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 
 from api import database as db
 from api import explain
-from api.schemas import HealthResponse, ScoringResponse, ThresholdResponse, ThresholdUpdate, TransactionRequest
+from api.schemas import (
+    HealthResponse,
+    ScoringResponse,
+    ThresholdResponse,
+    ThresholdUpdate,
+    TransactionRequest,
+)
 from api.scoring import Scorer
-from pipeline.config import ARTIFACTS, DB_PATH, FEATURE_ORDER, MODEL_PATH, SCALER_PATH, THRESHOLD_PATH
+from pipeline.config import (
+    ARTIFACTS,
+    DB_PATH,
+    FEATURE_ORDER,
+    MODEL_PATH,
+    SCALER_PATH,
+    THRESHOLD_PATH,
+)
 
 log = logging.getLogger("api")
 
@@ -38,7 +52,9 @@ def explain_transaction(state: object, transaction_id: str, raw: np.ndarray) -> 
     """Background task: store the top SHAP contributions for a flagged transaction."""
     try:
         scorer = state.scorer
-        top = explain.top_contributions(state.explainer, scorer.scale_row(raw), raw, scorer.feature_order)
+        top = explain.top_contributions(
+            state.explainer, scorer.scale_row(raw), raw, scorer.feature_order
+        )
         db.set_shap_top(state.db_path, transaction_id, top)
     except Exception:
         log.exception("failed to explain transaction %s", transaction_id)
@@ -49,10 +65,14 @@ def load_state(artifacts_dir: Path) -> dict:
     needed = [artifacts_dir / p.name for p in (MODEL_PATH, SCALER_PATH, THRESHOLD_PATH)]
     missing = [str(p) for p in needed if not p.exists()]
     if missing:
-        raise RuntimeError(f"Missing artifacts {missing}; run `make split train evaluate` first.")
+        raise RuntimeError(
+            f"Missing artifacts {missing}; run `make split train evaluate` first."
+        )
     meta = json.loads((artifacts_dir / THRESHOLD_PATH.name).read_text())
     if set(meta["feature_order"]) != set(FEATURE_ORDER):
-        raise RuntimeError("threshold.json feature_order does not match the API schema.")
+        raise RuntimeError(
+            "threshold.json feature_order does not match the API schema."
+        )
     model = joblib.load(artifacts_dir / MODEL_PATH.name)
     scaler = joblib.load(artifacts_dir / SCALER_PATH.name)
     return {
@@ -77,7 +97,9 @@ def create_app(artifacts_dir: Path = ARTIFACTS, db_path: Path = DB_PATH) -> Fast
     app = FastAPI(title="Fraud Detection API", lifespan=lifespan)
 
     @app.post("/score", response_model=ScoringResponse)
-    async def score(req: TransactionRequest, request: Request, background: BackgroundTasks) -> ScoringResponse:  # type: ignore[valid-type]
+    async def score(
+        req: TransactionRequest, request: Request, background: BackgroundTasks
+    ) -> ScoringResponse:  # type: ignore[valid-type]
         state = request.app.state
         started = time.perf_counter()
         raw = state.scorer.vectorize(req)
@@ -111,12 +133,16 @@ def create_app(artifacts_dir: Path = ARTIFACTS, db_path: Path = DB_PATH) -> Fast
     @app.get("/health", response_model=HealthResponse)
     async def health(request: Request) -> HealthResponse:
         state = request.app.state
-        return HealthResponse(status="ok", model_version=state.model_version, threshold=state.threshold)
+        return HealthResponse(
+            status="ok", model_version=state.model_version, threshold=state.threshold
+        )
 
     @app.get("/threshold", response_model=ThresholdResponse)
     async def get_threshold(request: Request) -> ThresholdResponse:
         state = request.app.state
-        return ThresholdResponse(threshold=state.threshold, source=state.threshold_source)
+        return ThresholdResponse(
+            threshold=state.threshold, source=state.threshold_source
+        )
 
     @app.put("/threshold", response_model=ThresholdResponse)
     def put_threshold(body: ThresholdUpdate, request: Request) -> ThresholdResponse:
@@ -127,26 +153,34 @@ def create_app(artifacts_dir: Path = ARTIFACTS, db_path: Path = DB_PATH) -> Fast
         state.threshold = body.threshold
         state.threshold_source = "override"
         log.info("threshold changed %.4f -> %.4f", old, body.threshold)
-        return ThresholdResponse(threshold=state.threshold, source=state.threshold_source)
+        return ThresholdResponse(
+            threshold=state.threshold, source=state.threshold_source
+        )
 
     @app.get("/explain/{transaction_id}")
     async def explain_endpoint(transaction_id: str, request: Request) -> dict:
         top = db.get_shap_top(request.app.state.db_path, transaction_id)
         if top is None:
-            raise HTTPException(status_code=404, detail="No explanation stored for this transaction")
+            raise HTTPException(
+                status_code=404, detail="No explanation stored for this transaction"
+            )
         return {"transaction_id": transaction_id, "top_features": top}
 
     @app.get("/metrics/summary")
     async def metrics_summary(request: Request, minutes: int = 5) -> dict:
         minutes = max(1, min(minutes, 24 * 60))
-        since = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat(timespec="milliseconds")
+        since = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat(
+            timespec="milliseconds"
+        )
         count, flagged, latencies = db.window_stats(request.app.state.db_path, since)
         return {
             "window_minutes": minutes,
             "count": count,
             "flagged": flagged,
             "flag_rate": flagged / count if count else 0.0,
-            "p95_latency_ms": float(np.percentile(latencies, 95)) if latencies else None,
+            "p95_latency_ms": float(np.percentile(latencies, 95))
+            if latencies
+            else None,
         }
 
     return app
