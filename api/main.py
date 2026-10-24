@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
+import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import joblib
 import numpy as np
@@ -28,6 +31,7 @@ from pipeline.config import (
     ARTIFACTS,
     DB_PATH,
     FEATURE_ORDER,
+    METRICS_PATH,
     MODEL_PATH,
     SCALER_PATH,
     THRESHOLD_PATH,
@@ -40,24 +44,33 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
-def persist_transaction(db_path: Path, record: db.TransactionRecord) -> None:
-    """Background task. A failed write is logged, never raised into the already-sent response."""
+def store_and_explain(
+    state: Any, record: db.TransactionRecord, raw: np.ndarray
+) -> None:
+    """Background task: insert the row, then SHAP it if flagged.
+
+    Failures are logged, never raised into the already-sent response. SHAP only runs if the
+    insert succeeded: on a duplicate transaction_id the insert is rejected, and explaining
+    would overwrite the original row's explanation with one for a different feature vector.
+    """
     try:
-        db.insert_transaction(db_path, record)
+        db.insert_transaction(state.db_path, record)
+    except sqlite3.IntegrityError:
+        log.warning("duplicate transaction_id %s ignored", record.transaction_id)
+        return
     except Exception:
         log.exception("failed to store transaction %s", record.transaction_id)
-
-
-def explain_transaction(state: object, transaction_id: str, raw: np.ndarray) -> None:
-    """Background task: store the top SHAP contributions for a flagged transaction."""
+        return
+    if not (record.flagged and state.explainer is not None):
+        return
     try:
         scorer = state.scorer
         top = explain.top_contributions(
             state.explainer, scorer.scale_row(raw), raw, scorer.feature_order
         )
-        db.set_shap_top(state.db_path, transaction_id, top)
+        db.set_shap_top(state.db_path, record.transaction_id, top)
     except Exception:
-        log.exception("failed to explain transaction %s", transaction_id)
+        log.exception("failed to explain transaction %s", record.transaction_id)
 
 
 def load_state(artifacts_dir: Path) -> dict:
@@ -69,10 +82,20 @@ def load_state(artifacts_dir: Path) -> dict:
             f"Missing artifacts {missing}; run `make split train evaluate` first."
         )
     meta = json.loads((artifacts_dir / THRESHOLD_PATH.name).read_text())
-    if set(meta["feature_order"]) != set(FEATURE_ORDER):
+    if (
+        list(meta["feature_order"]) != FEATURE_ORDER
+    ):  # order matters, not just the names
         raise RuntimeError(
-            "threshold.json feature_order does not match the API schema."
+            "threshold.json feature_order does not match the fixed feature order."
         )
+    metrics_file = artifacts_dir / METRICS_PATH.name
+    if metrics_file.exists():
+        trained = json.loads(metrics_file.read_text()).get("model_version")
+        if trained != meta["model_version"]:
+            raise RuntimeError(
+                f"threshold.json is for model {meta['model_version']} but the trained model is "
+                f"{trained}; run `make evaluate` to pick a threshold for the current model."
+            )
     model = joblib.load(artifacts_dir / MODEL_PATH.name)
     scaler = joblib.load(artifacts_dir / SCALER_PATH.name)
     return {
@@ -92,6 +115,7 @@ def create_app(artifacts_dir: Path = ARTIFACTS, db_path: Path = DB_PATH) -> Fast
             setattr(app.state, key, value)
         db.init_db(db_path)
         app.state.db_path = db_path
+        app.state.threshold_lock = threading.Lock()
         yield
 
     app = FastAPI(title="Fraud Detection API", lifespan=lifespan)
@@ -118,9 +142,7 @@ def create_app(artifacts_dir: Path = ARTIFACTS, db_path: Path = DB_PATH) -> Fast
             latency_ms=latency_ms,
             true_label=req.true_label,  # stored for simulation stats only
         )
-        background.add_task(persist_transaction, state.db_path, record)
-        if flagged and state.explainer is not None:  # runs after the insert, in order
-            background.add_task(explain_transaction, state, transaction_id, raw)
+        background.add_task(store_and_explain, state, record, raw)
         return ScoringResponse(
             transaction_id=transaction_id,
             fraud_probability=probability,
@@ -148,17 +170,22 @@ def create_app(artifacts_dir: Path = ARTIFACTS, db_path: Path = DB_PATH) -> Fast
     def put_threshold(body: ThresholdUpdate, request: Request) -> ThresholdResponse:
         """Update the in-memory threshold and log the change. Not on the /score path, so the write is inline."""
         state = request.app.state
-        old = state.threshold
-        db.insert_threshold_change(state.db_path, utc_now_iso(), old, body.threshold)
-        state.threshold = body.threshold
-        state.threshold_source = "override"
+        with (
+            state.threshold_lock
+        ):  # keeps the history chain and the threshold/source pair consistent
+            old = state.threshold
+            db.insert_threshold_change(
+                state.db_path, utc_now_iso(), old, body.threshold
+            )
+            state.threshold = body.threshold
+            state.threshold_source = "override"
         log.info("threshold changed %.4f -> %.4f", old, body.threshold)
-        return ThresholdResponse(
-            threshold=state.threshold, source=state.threshold_source
-        )
+        return ThresholdResponse(threshold=body.threshold, source="override")
 
     @app.get("/explain/{transaction_id}")
-    async def explain_endpoint(transaction_id: str, request: Request) -> dict:
+    def explain_endpoint(
+        transaction_id: str, request: Request
+    ) -> dict:  # sync: runs in the threadpool
         top = db.get_shap_top(request.app.state.db_path, transaction_id)
         if top is None:
             raise HTTPException(
@@ -167,20 +194,20 @@ def create_app(artifacts_dir: Path = ARTIFACTS, db_path: Path = DB_PATH) -> Fast
         return {"transaction_id": transaction_id, "top_features": top}
 
     @app.get("/metrics/summary")
-    async def metrics_summary(request: Request, minutes: int = 5) -> dict:
+    def metrics_summary(
+        request: Request, minutes: int = 5
+    ) -> dict:  # sync: runs in the threadpool
         minutes = max(1, min(minutes, 24 * 60))
         since = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat(
             timespec="milliseconds"
         )
-        count, flagged, latencies = db.window_stats(request.app.state.db_path, since)
+        count, flagged, p95 = db.window_summary(request.app.state.db_path, since)
         return {
             "window_minutes": minutes,
             "count": count,
             "flagged": flagged,
             "flag_rate": flagged / count if count else 0.0,
-            "p95_latency_ms": float(np.percentile(latencies, 95))
-            if latencies
-            else None,
+            "p95_latency_ms": p95,
         }
 
     return app

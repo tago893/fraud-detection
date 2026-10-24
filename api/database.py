@@ -117,11 +117,22 @@ def get_shap_top(path: Path, transaction_id: str) -> list[dict] | None:
     return json.loads(row[0]) if row and row[0] else None
 
 
-def window_stats(path: Path, since_iso: str) -> tuple[int, int, list[float]]:
-    """(count, flagged count, latencies) for transactions scored at or after since_iso."""
+def window_summary(path: Path, since_iso: str) -> tuple[int, int, float | None]:
+    """(count, flagged count, nearest-rank p95 latency) since since_iso, aggregated in SQL.
+
+    Only one latency value is read back, so a long window does not pull every row into Python.
+    """
     with connect(path) as conn:
-        rows = conn.execute(
-            "SELECT flagged, latency_ms FROM transactions WHERE scored_at >= ?",
+        count, flagged = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(flagged), 0) FROM transactions WHERE scored_at >= ?",
             (since_iso,),
-        ).fetchall()
-    return len(rows), sum(r[0] for r in rows), [r[1] for r in rows]
+        ).fetchone()
+        if count == 0:
+            return 0, 0, None
+        rank = -(-95 * count // 100) - 1  # ceil(0.95 * count) - 1
+        (p95,) = conn.execute(
+            "SELECT latency_ms FROM transactions WHERE scored_at >= ? "
+            "ORDER BY latency_ms LIMIT 1 OFFSET ?",
+            (since_iso, rank),
+        ).fetchone()
+    return count, flagged, float(p95)

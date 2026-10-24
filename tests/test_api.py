@@ -308,3 +308,99 @@ def test_metrics_summary(fresh_client, test_rows):
         and body["p95_latency_ms"] > 0
         and 0 <= body["flag_rate"] <= 1
     )
+
+
+# ---- fixes from the code review -----------------------------------------------------------
+
+
+def copy_artifacts(tmp_path):
+    import shutil
+
+    dest = tmp_path / "artifacts"
+    shutil.copytree(ARTIFACTS, dest, ignore=shutil.ignore_patterns("splits"))
+    return dest
+
+
+def test_duplicate_id_does_not_overwrite_original_explanation(fresh_client, test_rows):
+    frauds = test_rows[test_rows[TARGET] == 1]
+    flagged = []
+    for _, row in frauds.iterrows():
+        body = fresh_client.post("/score", json=row_payload(row)).json()
+        if body["flagged"]:
+            flagged.append(row)
+        if len(flagged) == 2:
+            break
+    assert len(flagged) == 2
+    fresh_client.post("/score", json=row_payload(flagged[0], transaction_id="same"))
+    before = fresh_client.get("/explain/same").json()
+    retry = fresh_client.post(
+        "/score", json=row_payload(flagged[1], transaction_id="same")
+    )
+    assert retry.status_code == 200
+    assert fresh_client.get("/explain/same").json() == before
+
+
+def test_startup_rejects_reordered_feature_order(tmp_path):
+    import json
+
+    art = copy_artifacts(tmp_path)
+    meta = json.loads((art / "threshold.json").read_text())
+    meta["feature_order"] = list(reversed(meta["feature_order"]))
+    (art / "threshold.json").write_text(json.dumps(meta))
+    with pytest.raises(RuntimeError, match="feature_order"):
+        with TestClient(create_app(artifacts_dir=art, db_path=tmp_path / "tx.db")):
+            pass
+
+
+def test_startup_rejects_threshold_from_a_different_model(tmp_path):
+    import json
+
+    art = copy_artifacts(tmp_path)
+    metrics = json.loads((art / "metrics.json").read_text())
+    metrics["model_version"] = "2099-01-01T00:00:00Z"
+    (art / "metrics.json").write_text(json.dumps(metrics))
+    with pytest.raises(RuntimeError, match="make evaluate"):
+        with TestClient(create_app(artifacts_dir=art, db_path=tmp_path / "tx.db")):
+            pass
+
+
+def test_concurrent_threshold_puts_keep_history_chain_intact(fresh_client):
+    from concurrent.futures import ThreadPoolExecutor
+
+    values = [round(0.1 + 0.02 * i, 2) for i in range(30)]
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        codes = list(
+            pool.map(
+                lambda v: fresh_client.put(
+                    "/threshold", json={"threshold": v}
+                ).status_code,
+                values,
+            )
+        )
+    assert set(codes) == {200}
+    history = db.threshold_history(fresh_client.app.state.db_path)
+    assert len(history) == 30
+    for (_, _, new), (_, old, _) in zip(history, history[1:]):
+        assert old == new  # each change starts from where the previous one ended
+    assert fresh_client.app.state.threshold == history[-1][2]
+
+
+def test_window_summary_nearest_rank_p95(tmp_path):
+    path = tmp_path / "tx.db"
+    db.init_db(path)
+    for i in range(1, 21):  # latencies 1..20 ms, every 4th flagged
+        db.insert_transaction(
+            path,
+            db.TransactionRecord(
+                f"id{i}",
+                "2026-01-01T00:00:00.000+00:00",
+                1.0,
+                0.1,
+                i % 4 == 0,
+                0.5,
+                float(i),
+                None,
+            ),
+        )
+    assert db.window_summary(path, "2026-01-01T00:00:00.000+00:00") == (20, 5, 19.0)
+    assert db.window_summary(path, "2027-01-01T00:00:00.000+00:00") == (0, 0, None)
