@@ -389,3 +389,18 @@ def test_slider_default_is_passed_to_the_widget_not_preset_in_session_state():
 
 def test_histogram_leaves_room_for_the_threshold_label():
     assert charts.score_histogram_figure(pd.Series([0.1]), 0.85).layout.margin.t >= 28
+
+
+def test_histogram_label_stays_inside_the_plot_for_high_thresholds():
+    assert (
+        charts.score_histogram_figure(pd.Series([0.1]), 0.95)
+        .layout.annotations[0]
+        .xanchor
+        == "right"
+    )
+    assert (
+        charts.score_histogram_figure(pd.Series([0.1]), 0.2)
+        .layout.annotations[0]
+        .xanchor
+        == "left"
+    )

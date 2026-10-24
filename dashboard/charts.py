@@ -75,7 +75,9 @@ def score_histogram_figure(
             x=threshold,
             line=dict(color=ORANGE, width=2),
             annotation_text=f"threshold {threshold:.2f}",
-            annotation_position="top",
+            annotation_position="top left"
+            if threshold > 0.7
+            else "top right",  # keep the label inside the plot
         )
     fig.update_yaxes(type="log", title_text="Transactions (log scale)")
     fig.update_xaxes(range=[0, 1], title_text="Fraud probability")

@@ -147,8 +147,15 @@ def render_what_if(labeled, slider_value: float, current: float | None) -> None:
     cols = st.columns(3)
     cols[0].metric("Precision", pct(chosen.precision))
     cols[1].metric("Recall", pct(chosen.recall))
-    delta = None if base is None else f"{chosen.cost - base.cost:+,.0f} vs current"
-    cols[2].metric("Cost", f"${chosen.cost:,.0f}", delta=delta, delta_color="inverse")
+    change = None if base is None else chosen.cost - base.cost
+    delta = None if change is None else f"{change:+,.0f} vs current"
+    # lower cost is better, so colour inversely; no colour when nothing changes
+    cols[2].metric(
+        "Cost",
+        f"${chosen.cost:,.0f}",
+        delta=delta,
+        delta_color="off" if change == 0 else "inverse",
+    )
     st.caption(
         f"{chosen.labeled:,} labeled transactions, {chosen.frauds} fraud. "
         f"TP {chosen.tp}, FP {chosen.fp}, FN {chosen.fn}. Cost = ${C_FP:g} per false alarm + amount of missed fraud."
