@@ -5,3 +5,7 @@ artifacts/
 __pycache__/
 .pytest_cache/
 .ruff_cache/
+CLAUDE.md
+PROMPTS.md
+SPEC.md
+TASKS.md
