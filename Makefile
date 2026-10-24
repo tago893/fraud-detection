@@ -1,4 +1,4 @@
-.PHONY: split train evaluate api simulate dashboard test
+.PHONY: split train evaluate api simulate dashboard test readme
 split:
 	python -m pipeline.split
 train:
@@ -13,3 +13,5 @@ dashboard:
 	streamlit run dashboard/app.py
 test:
 	pytest -q
+readme:
+	python -m pipeline.readme_table
