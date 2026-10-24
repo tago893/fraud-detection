@@ -6,13 +6,15 @@ import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import joblib
-from fastapi import BackgroundTasks, FastAPI, Request
+import numpy as np
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 
 from api import database as db
+from api import explain
 from api.schemas import HealthResponse, ScoringResponse, ThresholdResponse, ThresholdUpdate, TransactionRequest
 from api.scoring import Scorer
 from pipeline.config import ARTIFACTS, DB_PATH, FEATURE_ORDER, MODEL_PATH, SCALER_PATH, THRESHOLD_PATH
@@ -32,6 +34,16 @@ def persist_transaction(db_path: Path, record: db.TransactionRecord) -> None:
         log.exception("failed to store transaction %s", record.transaction_id)
 
 
+def explain_transaction(state: object, transaction_id: str, raw: np.ndarray) -> None:
+    """Background task: store the top SHAP contributions for a flagged transaction."""
+    try:
+        scorer = state.scorer
+        top = explain.top_contributions(state.explainer, scorer.scale_row(raw), raw, scorer.feature_order)
+        db.set_shap_top(state.db_path, transaction_id, top)
+    except Exception:
+        log.exception("failed to explain transaction %s", transaction_id)
+
+
 def load_state(artifacts_dir: Path) -> dict:
     """Load model, scaler, and threshold.json; fail fast if artifacts are missing or inconsistent."""
     needed = [artifacts_dir / p.name for p in (MODEL_PATH, SCALER_PATH, THRESHOLD_PATH)]
@@ -45,6 +57,7 @@ def load_state(artifacts_dir: Path) -> dict:
     scaler = joblib.load(artifacts_dir / SCALER_PATH.name)
     return {
         "scorer": Scorer.from_artifacts(model, scaler, meta["feature_order"]),
+        "explainer": explain.build_explainer(model),
         "threshold": float(meta["threshold"]),
         "threshold_source": "artifact",
         "artifact_threshold": float(meta["threshold"]),
@@ -67,7 +80,8 @@ def create_app(artifacts_dir: Path = ARTIFACTS, db_path: Path = DB_PATH) -> Fast
     async def score(req: TransactionRequest, request: Request, background: BackgroundTasks) -> ScoringResponse:  # type: ignore[valid-type]
         state = request.app.state
         started = time.perf_counter()
-        probability = state.scorer.predict_proba(state.scorer.vectorize(req))
+        raw = state.scorer.vectorize(req)
+        probability = state.scorer.predict_proba(raw)
         threshold = state.threshold
         latency_ms = (time.perf_counter() - started) * 1000
         transaction_id = req.transaction_id or str(uuid.uuid4())
@@ -83,6 +97,8 @@ def create_app(artifacts_dir: Path = ARTIFACTS, db_path: Path = DB_PATH) -> Fast
             true_label=req.true_label,  # stored for simulation stats only
         )
         background.add_task(persist_transaction, state.db_path, record)
+        if flagged and state.explainer is not None:  # runs after the insert, in order
+            background.add_task(explain_transaction, state, transaction_id, raw)
         return ScoringResponse(
             transaction_id=transaction_id,
             fraud_probability=probability,
@@ -112,6 +128,26 @@ def create_app(artifacts_dir: Path = ARTIFACTS, db_path: Path = DB_PATH) -> Fast
         state.threshold_source = "override"
         log.info("threshold changed %.4f -> %.4f", old, body.threshold)
         return ThresholdResponse(threshold=state.threshold, source=state.threshold_source)
+
+    @app.get("/explain/{transaction_id}")
+    async def explain_endpoint(transaction_id: str, request: Request) -> dict:
+        top = db.get_shap_top(request.app.state.db_path, transaction_id)
+        if top is None:
+            raise HTTPException(status_code=404, detail="No explanation stored for this transaction")
+        return {"transaction_id": transaction_id, "top_features": top}
+
+    @app.get("/metrics/summary")
+    async def metrics_summary(request: Request, minutes: int = 5) -> dict:
+        minutes = max(1, min(minutes, 24 * 60))
+        since = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat(timespec="milliseconds")
+        count, flagged, latencies = db.window_stats(request.app.state.db_path, since)
+        return {
+            "window_minutes": minutes,
+            "count": count,
+            "flagged": flagged,
+            "flag_rate": flagged / count if count else 0.0,
+            "p95_latency_ms": float(np.percentile(latencies, 95)) if latencies else None,
+        }
 
     return app
 

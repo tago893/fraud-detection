@@ -195,3 +195,56 @@ def test_stored_threshold_is_the_one_used_for_that_decision(fresh_client, test_r
     fresh_client.post("/score", json={**row, "transaction_id": "t1"})
     with db.connect(fresh_client.app.state.db_path) as conn:
         assert conn.execute("SELECT threshold FROM transactions WHERE transaction_id='t1'").fetchone()[0] == 0.5
+
+
+def test_flagged_row_gets_five_shap_features(fresh_client, known_fraud):
+    body = fresh_client.post("/score", json=row_payload(known_fraud, transaction_id="fraud-1")).json()
+    assert body["flagged"] is True
+    explained = fresh_client.get("/explain/fraud-1")
+    assert explained.status_code == 200
+    top = explained.json()["top_features"]
+    assert len(top) == 5
+    assert all(set(t) == {"feature", "shap_value", "feature_value"} and t["feature"] in FEATURE_ORDER for t in top)
+    magnitudes = [abs(t["shap_value"]) for t in top]
+    assert magnitudes == sorted(magnitudes, reverse=True)
+
+
+def test_unknown_or_unflagged_transaction_is_404(fresh_client, test_rows):
+    assert fresh_client.get("/explain/nope").status_code == 404
+    legit = test_rows[test_rows[TARGET] == 0].iloc[0]
+    assert fresh_client.post("/score", json=row_payload(legit, transaction_id="legit-1")).json()["flagged"] is False
+    assert fresh_client.get("/explain/legit-1").status_code == 404
+
+
+def test_shap_runs_after_response_is_sent(tmp_path, known_fraud, monkeypatch):
+    from api import explain
+
+    events: list[str] = []
+    real = explain.top_contributions
+
+    def spy(*args, **kwargs):
+        events.append("shap")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(explain, "top_contributions", spy)
+    app = create_app(db_path=tmp_path / "tx.db")
+
+    async def traced(scope, receive, send):
+        async def traced_send(message):
+            if message["type"] == "http.response.body" and not message.get("more_body"):
+                events.append("response_sent")
+            await send(message)
+
+        await app(scope, receive, traced_send)
+
+    with TestClient(traced) as c:
+        c.post("/score", json=row_payload(known_fraud))
+    assert events == ["response_sent", "shap"]
+
+
+def test_metrics_summary(fresh_client, test_rows):
+    assert fresh_client.get("/metrics/summary").json()["count"] == 0
+    for _, row in test_rows.head(20).iterrows():
+        fresh_client.post("/score", json=row_payload(row))
+    body = fresh_client.get("/metrics/summary", params={"minutes": 5}).json()
+    assert body["count"] == 20 and body["p95_latency_ms"] > 0 and 0 <= body["flag_rate"] <= 1
