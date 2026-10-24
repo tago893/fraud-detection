@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
+from api import database as db
 from api.main import create_app
 from api.scoring import Scorer
 from pipeline.config import ARTIFACTS, FEATURE_ORDER, TARGET
@@ -17,8 +18,15 @@ def row_payload(row: pd.Series, **extra) -> dict:
 
 
 @pytest.fixture(scope="module")
-def client():
-    with TestClient(create_app()) as c:
+def client(tmp_path_factory):
+    with TestClient(create_app(db_path=tmp_path_factory.mktemp("db") / "tx.db")) as c:
+        yield c
+
+
+@pytest.fixture
+def fresh_client(tmp_path):
+    """App with an empty database, for tests that count rows."""
+    with TestClient(create_app(db_path=tmp_path / "tx.db")) as c:
         yield c
 
 
@@ -97,3 +105,52 @@ def test_true_label_never_reaches_model(client, test_rows):
     assert len(seen) == 3 and all(x.shape == (1, len(FEATURE_ORDER)) for x in seen)
     np.testing.assert_array_equal(seen[0], seen[1])
     np.testing.assert_array_equal(seen[1], seen[2])
+
+
+def test_100_calls_store_100_rows_in_wal_mode(fresh_client, test_rows):
+    path = fresh_client.app.state.db_path
+    for _, row in test_rows.head(100).iterrows():
+        assert fresh_client.post("/score", json=row_payload(row)).status_code == 200
+    assert db.count_transactions(path) == 100
+    assert db.journal_mode(path) == "wal"
+
+
+def test_stored_row_matches_response_and_keeps_true_label(fresh_client, test_rows):
+    row = test_rows[test_rows[TARGET] == 1].iloc[0]
+    body = fresh_client.post("/score", json=row_payload(row, transaction_id="tx-a", true_label=1)).json()
+    with db.connect(fresh_client.app.state.db_path) as conn:
+        stored = conn.execute(
+            "SELECT amount, fraud_probability, flagged, threshold, true_label FROM transactions"
+        ).fetchone()
+    assert stored == (float(row["Amount"]), body["fraud_probability"], int(body["flagged"]), body["decision_threshold"], 1)
+
+
+def test_insert_runs_after_response_is_sent(tmp_path, test_rows, monkeypatch):
+    events: list[str] = []
+    real_insert = db.insert_transaction
+
+    def spy_insert(path, rec):
+        events.append("insert")
+        real_insert(path, rec)
+
+    monkeypatch.setattr(db, "insert_transaction", spy_insert)
+    app = create_app(db_path=tmp_path / "tx.db")
+
+    async def traced(scope, receive, send):
+        async def traced_send(message):
+            if message["type"] == "http.response.body" and not message.get("more_body"):
+                events.append("response_sent")
+            await send(message)
+
+        await app(scope, receive, traced_send)
+
+    with TestClient(traced) as c:
+        c.post("/score", json=row_payload(test_rows.iloc[0]))
+    assert events == ["response_sent", "insert"]
+
+
+def test_duplicate_transaction_id_does_not_break_response(fresh_client, test_rows):
+    body = row_payload(test_rows.iloc[0], transaction_id="dup")
+    assert fresh_client.post("/score", json=body).status_code == 200
+    assert fresh_client.post("/score", json=body).status_code == 200
+    assert db.count_transactions(fresh_client.app.state.db_path) == 1

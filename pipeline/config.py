@@ -20,3 +20,5 @@ SPLIT_FRACTIONS = {"train": 0.70, "val": 0.15, "test": 0.10, "replay": 0.05}
 FEATURE_ORDER = ["Time", "Amount"] + [f"V{i}" for i in range(1, 29)]
 SCALED_COLUMNS = ["Time", "Amount"]
 TARGET = "Class"
+
+DB_PATH = ROOT / "data" / "transactions.db"
