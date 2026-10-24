@@ -122,3 +122,76 @@ def test_app_waits_when_database_missing(tmp_path, monkeypatch):
     app = AppTest.from_file(APP, default_timeout=30).run()
     assert not app.exception
     assert any("Waiting for the API" in i.value for i in app.info)
+
+
+# ---- 4.2 charts ---------------------------------------------------------------------------
+
+import pandas as pd  # noqa: E402
+
+from dashboard import charts  # noqa: E402
+
+
+def frame(rows):
+    df = pd.DataFrame(rows, columns=["scored_at", "fraud_probability", "flagged"])
+    df["scored_at"] = pd.to_datetime(df["scored_at"], utc=True)
+    return df
+
+
+def test_flag_rate_series_buckets_and_skips_idle_gaps():
+    rows = [("2026-10-24T12:00:01Z", 0.1, 0), ("2026-10-24T12:00:05Z", 0.9, 1),  # bucket :00 -> 50 %
+            ("2026-10-24T12:00:12Z", 0.2, 0),                                    # bucket :10 -> 0 %
+            ("2026-10-24T12:00:45Z", 0.95, 1)]                                   # bucket :40 -> 100 %
+    series = charts.flag_rate_series(frame(rows))
+    assert series["flag_rate"].tolist() == [0.5, 0.0, 1.0]
+    assert series["requests"].tolist() == [2, 1, 1]  # the empty :20 and :30 buckets are dropped
+
+
+def test_flag_rate_series_empty():
+    assert charts.flag_rate_series(frame([])).empty
+
+
+def test_histogram_has_threshold_line_at_the_current_value():
+    fig = charts.score_histogram_figure(pd.Series([0.01, 0.02, 0.9]), 0.85)
+    assert [s.x0 for s in fig.layout.shapes] == [0.85]
+    assert fig.layout.yaxis.type == "log" and list(fig.layout.xaxis.range) == [0, 1]
+    assert len(fig.data) == 1
+
+
+def test_histogram_without_threshold_has_no_line():
+    assert not charts.score_histogram_figure(pd.Series([0.1]), None).layout.shapes
+
+
+def live_db(tmp_path):
+    """Rows scored in the last few seconds of real time (the app uses the wall clock)."""
+    path = tmp_path / "live.db"
+    db.init_db(path)
+    real_now = datetime.now(timezone.utc)
+    for i in range(30):
+        db.insert_transaction(
+            path,
+            db.TransactionRecord(
+                f"live{i}", data.iso_utc(real_now - timedelta(seconds=i)), 20.0, 0.9 if i % 10 == 0 else 0.05,
+                i % 10 == 0, 0.85, 1.5, 1 if i % 10 == 0 else 0,
+            ),
+        )
+    return path
+
+
+def test_app_draws_both_charts_with_the_threshold_fallback(tmp_path, monkeypatch):
+    monkeypatch.setenv("DASHBOARD_DB_PATH", str(live_db(tmp_path)))
+    monkeypatch.setenv("API_URL", "http://127.0.0.1:9")  # unreachable: threshold falls back to the stored one
+    app = AppTest.from_file(APP, default_timeout=30).run()
+    assert not app.exception
+    assert len(app.get("plotly_chart")) == 2
+
+
+def test_app_says_so_when_there_is_no_recent_data(tmp_path, monkeypatch):
+    path = tmp_path / "old.db"
+    db.init_db(path)
+    db.insert_transaction(
+        path, db.TransactionRecord("old1", "2020-01-01T00:00:00.000+00:00", 5.0, 0.1, False, 0.85, 1.0, None)
+    )
+    app = at_for(path, monkeypatch).run()
+    assert not app.exception
+    assert len(app.get("plotly_chart")) == 0
+    assert any("last 10 minutes" in c.value for c in app.caption)

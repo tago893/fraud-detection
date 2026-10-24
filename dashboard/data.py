@@ -13,7 +13,7 @@ import pandas as pd
 KPI_WINDOW_S = 60
 FEED_SIZE = 50
 CHART_WINDOW_MIN = 10
-MAX_LABELED_ROWS = 200_000
+MAX_LABELED_ROWS = 100_000
 
 
 def iso_utc(moment: datetime) -> str:

@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # so `python`/s
 
 import streamlit as st  # noqa: E402
 
-from dashboard import data  # noqa: E402
+from dashboard import api_client, charts, data  # noqa: E402
 from pipeline.config import ARTIFACTS, DB_PATH  # noqa: E402
 
 REFRESH_S = 2
@@ -45,6 +45,29 @@ def render_kpis(kpis: data.Kpis) -> None:
     cols[3].metric("Flag rate", f"{kpis.flag_rate:.2%}")
     cols[4].metric("Caught fraud $", f"${kpis.caught_fraud_dollars:,.0f}", help="flagged and true_label = 1")
     cols[5].metric("Missed fraud $", f"${kpis.missed_fraud_dollars:,.0f}", help="not flagged and true_label = 1")
+
+
+def resolve_threshold(settings: Settings, conn) -> float | None:
+    """Current threshold from the API; falls back to the last stored row if the API is unreachable."""
+    state = api_client.get_threshold(settings.api_url)
+    return state.threshold if state is not None else data.latest_threshold(conn)
+
+
+def render_charts(conn, now: datetime, threshold: float | None) -> None:
+    recent = data.load_recent_scores(conn, now)
+    left, right = st.columns(2)
+    with left:
+        st.subheader("Flag rate over time")
+        if recent.empty:
+            st.caption("No transactions in the last 10 minutes.")
+        else:
+            st.plotly_chart(charts.flag_rate_figure(charts.flag_rate_series(recent)), use_container_width=True)
+    with right:
+        st.subheader("Score distribution")
+        if recent.empty:
+            st.caption("No transactions in the last 10 minutes.")
+        else:
+            st.plotly_chart(charts.score_histogram_figure(recent["fraud_probability"], threshold), use_container_width=True)
 
 
 def render_feed(conn) -> None:
@@ -77,7 +100,9 @@ def live_view() -> None:
         return
     try:
         now = datetime.now(timezone.utc)
+        threshold = resolve_threshold(settings, conn)
         render_kpis(data.load_kpis(conn, now))
+        render_charts(conn, now, threshold)
         render_feed(conn)
     finally:
         conn.close()
