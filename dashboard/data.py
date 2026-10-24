@@ -50,7 +50,9 @@ def load_kpis(conn: sqlite3.Connection, now: datetime) -> Kpis:
         " MIN(scored_at) FROM transactions"
     ).fetchone()
     since = iso_utc(now - timedelta(seconds=KPI_WINDOW_S))
-    recent = conn.execute("SELECT COUNT(*) FROM transactions WHERE scored_at >= ?", (since,)).fetchone()[0]
+    recent = conn.execute(
+        "SELECT COUNT(*) FROM transactions WHERE scored_at >= ?", (since,)
+    ).fetchone()[0]
     p95 = None
     if recent:
         rank = -(-95 * recent // 100) - 1  # nearest-rank: ceil(0.95 * n) - 1
@@ -94,7 +96,9 @@ def load_flagged_feed(conn: sqlite3.Connection, limit: int = FEED_SIZE) -> pd.Da
     return frame
 
 
-def load_recent_scores(conn: sqlite3.Connection, now: datetime, minutes: int = CHART_WINDOW_MIN) -> pd.DataFrame:
+def load_recent_scores(
+    conn: sqlite3.Connection, now: datetime, minutes: int = CHART_WINDOW_MIN
+) -> pd.DataFrame:
     since = iso_utc(now - timedelta(minutes=minutes))
     frame = pd.read_sql_query(
         "SELECT scored_at, fraud_probability, flagged FROM transactions WHERE scored_at >= ? ORDER BY scored_at",
@@ -117,5 +121,15 @@ def load_labeled_scores(conn: sqlite3.Connection) -> pd.DataFrame:
 
 def latest_threshold(conn: sqlite3.Connection) -> float | None:
     """Threshold used for the most recent row; a fallback when the API cannot be reached."""
-    row = conn.execute("SELECT threshold FROM transactions ORDER BY scored_at DESC LIMIT 1").fetchone()
+    row = conn.execute(
+        "SELECT threshold FROM transactions ORDER BY scored_at DESC LIMIT 1"
+    ).fetchone()
     return float(row[0]) if row else None
+
+
+def load_pr_curve(artifacts_dir: Path) -> list[dict]:
+    """Validation PR-curve points written by `make evaluate`; empty if metrics.json is not there."""
+    path = artifacts_dir / "metrics.json"
+    if not path.exists():
+        return []
+    return json.loads(path.read_text()).get("pr_curve", [])

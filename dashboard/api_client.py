@@ -28,7 +28,9 @@ def get_threshold(api_url: str) -> ThresholdState | None:
 
 def put_threshold(api_url: str, threshold: float) -> ThresholdState:
     """PUT /threshold. Raises httpx.HTTPError (or ValueError on a bad body) if the change did not apply."""
-    response = httpx.put(f"{api_url}/threshold", json={"threshold": threshold}, timeout=TIMEOUT_S)
+    response = httpx.put(
+        f"{api_url}/threshold", json={"threshold": threshold}, timeout=TIMEOUT_S
+    )
     response.raise_for_status()
     body = response.json()
     return ThresholdState(float(body["threshold"]), str(body["source"]))

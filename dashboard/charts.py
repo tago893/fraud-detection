@@ -23,7 +23,9 @@ def flag_rate_series(recent: pd.DataFrame, bucket: str = "10s") -> pd.DataFrame:
         return pd.DataFrame({"time": [], "flag_rate": [], "requests": []})
     grouped = recent.set_index("scored_at")["flagged"].astype(float).resample(bucket)
     series = pd.DataFrame({"flag_rate": grouped.mean(), "requests": grouped.count()})
-    series = series[series["requests"] > 0]  # drop idle buckets rather than draw them as 0 %
+    series = series[
+        series["requests"] > 0
+    ]  # drop idle buckets rather than draw them as 0 %
     return series.rename_axis("time").reset_index()
 
 
@@ -57,7 +59,9 @@ def flag_rate_figure(series: pd.DataFrame) -> go.Figure:
     return _base_layout(fig)
 
 
-def score_histogram_figure(probabilities: pd.Series, threshold: float | None) -> go.Figure:
+def score_histogram_figure(
+    probabilities: pd.Series, threshold: float | None
+) -> go.Figure:
     fig = go.Figure(
         go.Histogram(
             x=probabilities,
@@ -77,3 +81,55 @@ def score_histogram_figure(probabilities: pd.Series, threshold: float | None) ->
     fig.update_xaxes(range=[0, 1], title_text="Fraud probability")
     fig.update_layout(bargap=0.15)
     return _base_layout(fig)
+
+
+def nearest_point(curve: list[dict], threshold: float) -> dict:
+    return min(curve, key=lambda point: abs(point["threshold"] - threshold))
+
+
+def pr_curve_figure(
+    curve: list[dict], current: float | None, what_if: float | None
+) -> go.Figure:
+    """Validation PR curve with a marker for the live threshold and one for the slider position."""
+    fig = go.Figure(
+        go.Scatter(
+            x=[p["recall"] for p in curve],
+            y=[p["precision"] for p in curve],
+            mode="lines",
+            name="Validation PR curve",
+            line=dict(color=BLUE, width=2),
+            hovertemplate="recall %{x:.2f}, precision %{y:.2f}<extra></extra>",
+        )
+    )
+    markers = (
+        (current, "Current threshold", ORANGE, "circle"),
+        (what_if, "What-if threshold", AQUA, "diamond"),
+    )
+    for value, name, color, symbol in markers:
+        if value is None or not curve:
+            continue
+        point = nearest_point(curve, value)
+        fig.add_trace(
+            go.Scatter(
+                x=[point["recall"]],
+                y=[point["precision"]],
+                mode="markers+text",
+                name=name,
+                text=[f"{value:.2f}"],
+                textposition="top right" if symbol == "circle" else "bottom left",
+                marker=dict(
+                    color=color,
+                    size=12,
+                    symbol=symbol,
+                    line=dict(color="rgba(0,0,0,0)", width=0),
+                ),
+                hovertemplate=f"{name} {value:.2f}<extra></extra>",
+            )
+        )
+    fig.update_xaxes(title_text="Recall", range=[0, 1.02])
+    fig.update_yaxes(title_text="Precision", range=[0, 1.02])
+    _base_layout(fig)
+    fig.update_layout(
+        showlegend=True, legend=dict(orientation="h", y=-0.25), hovermode="closest"
+    )
+    return fig
