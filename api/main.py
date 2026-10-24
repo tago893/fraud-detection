@@ -13,7 +13,7 @@ import joblib
 from fastapi import BackgroundTasks, FastAPI, Request
 
 from api import database as db
-from api.schemas import HealthResponse, ScoringResponse, TransactionRequest
+from api.schemas import HealthResponse, ScoringResponse, ThresholdResponse, ThresholdUpdate, TransactionRequest
 from api.scoring import Scorer
 from pipeline.config import ARTIFACTS, DB_PATH, FEATURE_ORDER, MODEL_PATH, SCALER_PATH, THRESHOLD_PATH
 
@@ -96,6 +96,22 @@ def create_app(artifacts_dir: Path = ARTIFACTS, db_path: Path = DB_PATH) -> Fast
     async def health(request: Request) -> HealthResponse:
         state = request.app.state
         return HealthResponse(status="ok", model_version=state.model_version, threshold=state.threshold)
+
+    @app.get("/threshold", response_model=ThresholdResponse)
+    async def get_threshold(request: Request) -> ThresholdResponse:
+        state = request.app.state
+        return ThresholdResponse(threshold=state.threshold, source=state.threshold_source)
+
+    @app.put("/threshold", response_model=ThresholdResponse)
+    def put_threshold(body: ThresholdUpdate, request: Request) -> ThresholdResponse:
+        """Update the in-memory threshold and log the change. Not on the /score path, so the write is inline."""
+        state = request.app.state
+        old = state.threshold
+        db.insert_threshold_change(state.db_path, utc_now_iso(), old, body.threshold)
+        state.threshold = body.threshold
+        state.threshold_source = "override"
+        log.info("threshold changed %.4f -> %.4f", old, body.threshold)
+        return ThresholdResponse(threshold=state.threshold, source=state.threshold_source)
 
     return app
 

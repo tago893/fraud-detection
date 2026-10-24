@@ -154,3 +154,44 @@ def test_duplicate_transaction_id_does_not_break_response(fresh_client, test_row
     assert fresh_client.post("/score", json=body).status_code == 200
     assert fresh_client.post("/score", json=body).status_code == 200
     assert db.count_transactions(fresh_client.app.state.db_path) == 1
+
+
+def test_threshold_starts_at_artifact_value(fresh_client):
+    body = fresh_client.get("/threshold").json()
+    assert body == {"threshold": fresh_client.app.state.artifact_threshold, "source": "artifact"}
+
+
+def test_put_threshold_changes_flag_and_logs_history(fresh_client, test_rows):
+    state = fresh_client.app.state
+    # a fraud row the model flags at the artifact threshold but scores below 0.99
+    candidates = test_rows[test_rows[TARGET] == 1]
+    probs = {i: fresh_client.post("/score", json=row_payload(r)).json()["fraud_probability"] for i, r in candidates.iterrows()}
+    idx = next((i for i, p in probs.items() if state.artifact_threshold <= p < 0.99), None)
+    if idx is None:
+        pytest.skip("no test fraud row scores between the artifact threshold and 0.99")
+    payload = row_payload(test_rows.loc[idx])
+
+    assert fresh_client.post("/score", json=payload).json()["flagged"] is True
+    put = fresh_client.put("/threshold", json={"threshold": 0.99})
+    assert put.json() == {"threshold": 0.99, "source": "override"}
+    after = fresh_client.post("/score", json=payload).json()
+    assert after["flagged"] is False and after["decision_threshold"] == 0.99
+    assert fresh_client.get("/threshold").json() == {"threshold": 0.99, "source": "override"}
+    history = db.threshold_history(state.db_path)
+    assert [(old, new) for _, old, new in history] == [(state.artifact_threshold, 0.99)]
+
+
+@pytest.mark.parametrize("bad", [1.5, -0.1, "high"])
+def test_put_threshold_out_of_range_is_422_and_ignored(fresh_client, bad):
+    before = fresh_client.get("/threshold").json()
+    assert fresh_client.put("/threshold", json={"threshold": bad}).status_code == 422
+    assert fresh_client.get("/threshold").json() == before
+    assert db.threshold_history(fresh_client.app.state.db_path) == []
+
+
+def test_stored_threshold_is_the_one_used_for_that_decision(fresh_client, test_rows):
+    row = row_payload(test_rows.iloc[0])
+    fresh_client.put("/threshold", json={"threshold": 0.5})
+    fresh_client.post("/score", json={**row, "transaction_id": "t1"})
+    with db.connect(fresh_client.app.state.db_path) as conn:
+        assert conn.execute("SELECT threshold FROM transactions WHERE transaction_id='t1'").fetchone()[0] == 0.5
